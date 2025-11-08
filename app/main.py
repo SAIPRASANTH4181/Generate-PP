@@ -3,13 +3,21 @@
 from __future__ import annotations
 
 from io import BytesIO
+from pathlib import Path
 from typing import Optional
+import sys
 
 import streamlit as st
 from PIL import Image
 from streamlit_cropper import st_cropper
 
-from passport_photo.processing import (
+# Ensure the repository root (which contains ``passport_photo``) is importable when the
+# app is launched via ``streamlit run app/main.py``.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:  # pragma: no cover - environment specific safeguard
+    sys.path.insert(0, str(REPO_ROOT))
+
+from passport_photo.processing import (  # noqa: E402 - imported after sys.path fix
     CropSuggestion,
     prepare_passport_photo,
     suggest_crop,
@@ -85,12 +93,16 @@ def main() -> None:
             default_rect=default_rect,
         )
 
-        crop_tuple = (
-            int(crop_box["left"]),
-            int(crop_box["top"]),
-            int(crop_box["left"] + crop_box["width"]),
-            int(crop_box["top"] + crop_box["height"]),
-        )
+        if crop_box is None:
+            crop_tuple: Optional[tuple[int, int, int, int]] = None
+            st.warning("Adjust the crop area before processing the image.")
+        else:
+            crop_tuple = (
+                int(crop_box["left"]),
+                int(crop_box["top"]),
+                int(crop_box["left"] + crop_box["width"]),
+                int(crop_box["top"] + crop_box["height"]),
+            )
 
         st.caption("Drag the handles to fine-tune the crop. Aspect ratio is locked to 1:1.")
 
