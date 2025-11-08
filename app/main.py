@@ -18,7 +18,6 @@ if str(REPO_ROOT) not in sys.path:  # pragma: no cover - environment specific sa
     sys.path.insert(0, str(REPO_ROOT))
 
 from passport_photo.processing import (  # noqa: E402 - imported after sys.path fix
-    CropSuggestion,
     prepare_passport_photo,
     suggest_crop,
     validate_image_size,
@@ -26,15 +25,6 @@ from passport_photo.processing import (  # noqa: E402 - imported after sys.path 
 from passport_photo.sheet import create_passport_sheet
 
 st.set_page_config(page_title="US Passport Photo Generator", page_icon="📷", layout="wide")
-
-
-def _relative_rect(suggestion: CropSuggestion, image: Image.Image) -> tuple[float, float, float, float]:
-    return (
-        suggestion.left / image.width,
-        suggestion.top / image.height,
-        suggestion.right / image.width,
-        suggestion.bottom / image.height,
-    )
 
 
 def _image_to_bytes(image: Image.Image) -> bytes:
@@ -72,14 +62,17 @@ def main() -> None:
     with col1:
         st.image(original_image, caption="Original upload", use_column_width=True)
 
+    crop_tuple: Optional[tuple[int, int, int, int]] = None
+
     with col2:
         auto_crop_enabled = st.checkbox("Suggest crop using face detection", value=True)
 
-        default_rect: Optional[tuple[float, float, float, float]] = None
         if auto_crop_enabled:
             suggestion = suggest_crop(original_image)
             if suggestion:
-                default_rect = _relative_rect(suggestion, original_image)
+                st.caption(
+                    "Face detected. You can fine-tune the crop or press Process to apply the suggested framing automatically."
+                )
             else:
                 st.warning("Face detection failed; adjust the crop manually.")
 
@@ -90,11 +83,9 @@ def main() -> None:
             box_color="#00FF00",
             realtime_update=True,
             key="passport-cropper",
-            default_rect=default_rect,
         )
 
         if crop_box is None:
-            crop_tuple: Optional[tuple[int, int, int, int]] = None
             st.warning("Adjust the crop area before processing the image.")
         else:
             crop_tuple = (
@@ -111,8 +102,16 @@ def main() -> None:
 
     if st.button("Process Image", type="primary"):
         with st.spinner("Processing..."):
+            if crop_tuple is None and not auto_crop_enabled:
+                st.error("Select a crop area or enable face-detection assisted cropping before processing.")
+                return
+
             try:
-                processed = prepare_passport_photo(original_image, crop_tuple)
+                processed = prepare_passport_photo(
+                    original_image,
+                    crop_tuple,
+                    auto_crop=auto_crop_enabled,
+                )
             except ValueError as exc:
                 st.error(str(exc))
                 return
