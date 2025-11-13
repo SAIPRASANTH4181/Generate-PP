@@ -8,21 +8,31 @@ from typing import Iterable
 
 from .processing import load_image, prepare_passport_photo, save_passport_photo
 from .sheet import create_passport_sheet, save_sheet
+from .standards import DEFAULT_STANDARD, STANDARDS, get_standard
 
 
-def _process_single(input_path: Path, output_path: Path, *, auto_crop: bool, make_sheet: bool) -> None:
+def _process_single(
+    input_path: Path,
+    output_path: Path,
+    *,
+    auto_crop: bool,
+    make_sheet: bool,
+    standard_code: str,
+) -> None:
     image = load_image(input_path)
-    processed = prepare_passport_photo(image, auto_crop=auto_crop)
-    save_passport_photo(processed, output_path)
+    standard = get_standard(standard_code)
+    processed = prepare_passport_photo(image, auto_crop=auto_crop, standard=standard)
+    save_passport_photo(processed, output_path, standard=standard)
 
     if make_sheet:
-        sheet = create_passport_sheet(processed)
-        sheet_path = output_path.with_name(output_path.stem + "_4x6.jpg")
-        save_sheet(sheet, sheet_path)
+        sheet = create_passport_sheet(processed, standard=standard)
+        sheet_suffix = standard.sheet.label.replace(" ", "_").replace("×", "x")
+        sheet_path = output_path.with_name(output_path.stem + f"_{sheet_suffix}.jpg")
+        save_sheet(sheet, sheet_path, standard=standard)
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Generate USCIS-compliant passport photos.")
+    parser = argparse.ArgumentParser(description="Generate passport photos for multiple standards.")
     parser.add_argument("inputs", nargs="+", type=Path, help="Input image file(s).")
     parser.add_argument(
         "-o",
@@ -39,7 +49,13 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--sheet",
         action="store_true",
-        help="Also create a 4x6 sheet with multiple copies of each processed photo.",
+        help="Also create a printable sheet with multiple copies sized for the selected standard.",
+    )
+    parser.add_argument(
+        "--standard",
+        choices=sorted(STANDARDS.keys()),
+        default=DEFAULT_STANDARD.code,
+        help="Passport standard to apply (defaults to %(default)s).",
     )
     return parser
 
@@ -52,9 +68,16 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     for input_path in args.inputs:
         try:
-            output_path = args.output_dir / (input_path.stem + "_passport.jpg")
-            _process_single(input_path, output_path, auto_crop=args.auto_crop, make_sheet=args.sheet)
-            print(f"Saved passport photo to {output_path}")
+            standard = get_standard(args.standard)
+            output_path = args.output_dir / (input_path.stem + f"_{standard.code}_passport.jpg")
+            _process_single(
+                input_path,
+                output_path,
+                auto_crop=args.auto_crop,
+                make_sheet=args.sheet,
+                standard_code=args.standard,
+            )
+            print(f"Saved {standard.display_name} passport photo to {output_path}")
         except Exception as exc:  # pragma: no cover - CLI feedback path
             print(f"Failed to process {input_path}: {exc}")
 

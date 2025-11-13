@@ -1,4 +1,4 @@
-"""Core image processing helpers for USCIS-compliant passport photos."""
+"""Core image processing helpers for passport photos."""
 
 from __future__ import annotations
 
@@ -11,9 +11,7 @@ import numpy as np
 from PIL import Image, ImageFilter, ImageOps
 from rembg import remove
 
-USCIS_WIDTH_PX = 600
-USCIS_HEIGHT_PX = 600
-USCIS_DPI = 300
+from .standards import DEFAULT_STANDARD, PassportStandard
 
 
 @dataclass
@@ -36,18 +34,22 @@ def load_image(path: Path | str) -> Image.Image:
     return image.convert("RGB")
 
 
-def validate_image_size(image: Image.Image) -> None:
+def validate_image_size(image: Image.Image, standard: PassportStandard = DEFAULT_STANDARD) -> None:
     """Validate that the input image meets the minimum size requirements."""
 
     width, height = image.size
-    if width < USCIS_WIDTH_PX or height < USCIS_HEIGHT_PX:
+    target_width, target_height = standard.size
+    if width < target_width or height < target_height:
         raise ValueError(
-            "Input image must be at least 600x600 pixels. "
-            "Please upload a higher-resolution photo."
+            "Input image is too small. "
+            f"It must be at least {target_width}x{target_height} pixels for {standard.display_name}."
         )
 
 
-def suggest_crop(image: Image.Image) -> Optional[CropSuggestion]:
+def suggest_crop(
+    image: Image.Image,
+    standard: PassportStandard = DEFAULT_STANDARD,
+) -> Optional[CropSuggestion]:
     """Suggest a crop around the detected face using OpenCV Haar cascades."""
 
     cv_image = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
@@ -63,17 +65,27 @@ def suggest_crop(image: Image.Image) -> Optional[CropSuggestion]:
     center_x = x + w // 2
     center_y = y + h // 2
 
-    half_size = max(w, h)
-    half_size = int(half_size * 1.7 / 2)
+    ratio = standard.aspect_ratio
+    padding = standard.face_padding
 
-    left = max(center_x - half_size, 0)
-    top = max(center_y - half_size, 0)
-    right = min(center_x + half_size, image.width)
-    bottom = min(center_y + half_size, image.height)
+    target_height = max(h * padding, (w * padding) / ratio)
+    target_width = target_height * ratio
 
-    size = min(right - left, bottom - top)
-    right = left + size
-    bottom = top + size
+    half_width = target_width / 2
+    half_height = target_height / 2
+
+    left = int(round(center_x - half_width))
+    top = int(round(center_y - half_height))
+    right = int(round(center_x + half_width))
+    bottom = int(round(center_y + half_height))
+
+    # Ensure the crop stays inside the image boundaries.
+    if left < 0:
+        right -= left
+        left = 0
+    if top < 0:
+        bottom -= top
+        top = 0
 
     if right > image.width:
         shift = right - image.width
@@ -90,16 +102,22 @@ def suggest_crop(image: Image.Image) -> Optional[CropSuggestion]:
     return CropSuggestion(left=left, top=top, right=right, bottom=bottom)
 
 
-def crop_image(image: Image.Image, crop_box: Tuple[int, int, int, int]) -> Image.Image:
+def crop_image(
+    image: Image.Image,
+    crop_box: Tuple[int, int, int, int],
+    standard: PassportStandard = DEFAULT_STANDARD,
+) -> Image.Image:
     """Crop the image to the provided bounding box."""
 
     cropped = image.crop(crop_box)
     width, height = cropped.size
-    if width < USCIS_WIDTH_PX or height < USCIS_HEIGHT_PX:
+    target_width, target_height = standard.size
+    if width < target_width or height < target_height:
         raise ValueError(
-            "Selected crop is smaller than 600x600 pixels. Adjust the crop to avoid upscaling."
+            "Selected crop is too small. "
+            f"Ensure the crop is at least {target_width}x{target_height} pixels for {standard.display_name}."
         )
-    return ImageOps.fit(cropped, (USCIS_WIDTH_PX, USCIS_HEIGHT_PX), method=Image.LANCZOS)
+    return ImageOps.fit(cropped, (target_width, target_height), method=Image.LANCZOS)
 
 
 def remove_background(image: Image.Image) -> Image.Image:
@@ -122,34 +140,40 @@ def prepare_passport_photo(
     crop_box: Optional[Tuple[int, int, int, int]] = None,
     *,
     auto_crop: bool = False,
+    standard: PassportStandard = DEFAULT_STANDARD,
 ) -> Image.Image:
-    """Generate a USCIS-compliant passport photo from the provided image."""
+    """Generate a passport photo from the provided image using the given standard."""
 
-    validate_image_size(image)
+    validate_image_size(image, standard=standard)
 
     working = image.copy()
 
     if crop_box is not None:
-        cropped = crop_image(working, crop_box)
+        cropped = crop_image(working, crop_box, standard=standard)
     elif auto_crop:
-        suggestion = suggest_crop(working)
+        suggestion = suggest_crop(working, standard=standard)
         if suggestion:
-            cropped = crop_image(working, suggestion.to_tuple())
+            cropped = crop_image(working, suggestion.to_tuple(), standard=standard)
         else:
-            cropped = ImageOps.fit(working, (USCIS_WIDTH_PX, USCIS_HEIGHT_PX), method=Image.LANCZOS)
+            cropped = ImageOps.fit(working, standard.size, method=Image.LANCZOS)
     else:
-        cropped = ImageOps.fit(working, (USCIS_WIDTH_PX, USCIS_HEIGHT_PX), method=Image.LANCZOS)
+        cropped = ImageOps.fit(working, standard.size, method=Image.LANCZOS)
 
     processed = remove_background(cropped)
 
-    processed.info["dpi"] = (USCIS_DPI, USCIS_DPI)
+    processed.info["dpi"] = (standard.dpi, standard.dpi)
     return processed
 
 
-def save_passport_photo(image: Image.Image, path: Path | str) -> None:
+def save_passport_photo(
+    image: Image.Image,
+    path: Path | str,
+    *,
+    standard: PassportStandard = DEFAULT_STANDARD,
+) -> None:
     """Save an image to disk with the correct DPI metadata."""
 
-    image.save(path, format="JPEG", dpi=(USCIS_DPI, USCIS_DPI), quality=95)
+    image.save(path, format="JPEG", dpi=(standard.dpi, standard.dpi), quality=95)
 
 
 __all__ = [
