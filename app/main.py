@@ -1,4 +1,4 @@
-"""Streamlit application for generating USCIS-compliant passport photos."""
+"""Streamlit application for generating passport photos."""
 
 from __future__ import annotations
 
@@ -23,8 +23,13 @@ from passport_photo.processing import (  # noqa: E402 - imported after sys.path 
     validate_image_size,
 )
 from passport_photo.sheet import create_passport_sheet
+from passport_photo.standards import (  # noqa: E402 - imported after sys.path fix
+    DEFAULT_STANDARD,
+    STANDARDS,
+    PassportStandard,
+)
 
-st.set_page_config(page_title="US Passport Photo Generator", page_icon="📷", layout="wide")
+st.set_page_config(page_title="Passport Photo Generator", page_icon="📷", layout="wide")
 
 
 def _image_to_bytes(image: Image.Image) -> bytes:
@@ -34,13 +39,37 @@ def _image_to_bytes(image: Image.Image) -> bytes:
     return buffer.getvalue()
 
 
+def _select_standard() -> PassportStandard:
+    """Render a selector for passport standards and return the chosen option."""
+
+    options = sorted(STANDARDS.values(), key=lambda standard: standard.display_name)
+    selected = st.sidebar.selectbox(
+        "Passport format",
+        options,
+        format_func=lambda standard: standard.display_name,
+        index=next((i for i, opt in enumerate(options) if opt.code == DEFAULT_STANDARD.code), 0),
+    )
+
+    st.sidebar.caption(selected.description)
+    st.sidebar.metric("Dimensions", selected.formatted_dimensions())
+    st.sidebar.metric("DPI", f"{selected.dpi} dpi")
+
+    return selected
+
+
 def main() -> None:
-    st.title("USCIS Passport Photo Builder")
+    st.title("Passport Photo Builder")
     st.markdown(
         """
         Upload a high-resolution portrait, adjust the crop, and automatically create a
-        compliant 2x2 inch (600x600 pixel) passport photo with a clean white background.
+        compliant passport photo with a clean background.
         """
+    )
+
+    selected_standard = _select_standard()
+    st.info(
+        f"Currently generating **{selected_standard.display_name}** photos: "
+        f"{selected_standard.formatted_dimensions()} at {selected_standard.dpi} dpi."
     )
 
     uploaded_file = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
@@ -51,7 +80,7 @@ def main() -> None:
 
     try:
         original_image = Image.open(uploaded_file).convert("RGB")
-        validate_image_size(original_image)
+        validate_image_size(original_image, standard=selected_standard)
     except ValueError as exc:
         st.error(str(exc))
         return
@@ -68,7 +97,7 @@ def main() -> None:
         auto_crop_enabled = st.checkbox("Suggest crop using face detection", value=True)
 
         if auto_crop_enabled:
-            suggestion = suggest_crop(original_image)
+            suggestion = suggest_crop(original_image, standard=selected_standard)
             if suggestion:
                 st.caption(
                     "Face detected. You can fine-tune the crop or press Process to apply the suggested framing automatically."
@@ -78,7 +107,7 @@ def main() -> None:
 
         crop_box = st_cropper(
             original_image,
-            aspect_ratio=(1, 1),
+            aspect_ratio=(selected_standard.width_px, selected_standard.height_px),
             return_type="box",
             box_color="#00FF00",
             realtime_update=True,
@@ -95,10 +124,15 @@ def main() -> None:
                 int(crop_box["top"] + crop_box["height"]),
             )
 
-        st.caption("Drag the handles to fine-tune the crop. Aspect ratio is locked to 1:1.")
+        st.caption(
+            "Drag the handles to fine-tune the crop. Aspect ratio is locked to "
+            f"{selected_standard.width_px}:{selected_standard.height_px}."
+        )
 
     st.subheader("Generate Passport Photo")
-    sheet_option = st.checkbox("Also prepare a 4x6 sheet with 4 copies")
+    sheet_option = st.checkbox(
+        f"Also prepare a {selected_standard.sheet.label} with {selected_standard.sheet.default_copies} copies"
+    )
 
     if st.button("Process Image", type="primary"):
         with st.spinner("Processing..."):
@@ -111,6 +145,7 @@ def main() -> None:
                     original_image,
                     crop_tuple,
                     auto_crop=auto_crop_enabled,
+                    standard=selected_standard,
                 )
             except ValueError as exc:
                 st.error(str(exc))
@@ -119,23 +154,27 @@ def main() -> None:
             processed_bytes = _image_to_bytes(processed)
 
             st.success("Passport photo ready!")
-            st.image(processed, caption="USCIS-ready 2x2 photo", width=300)
+            st.image(
+                processed,
+                caption=f"{selected_standard.display_name} photo",
+                width=min(320, selected_standard.width_px),
+            )
 
             st.download_button(
                 label="Download passport photo (JPEG)",
                 data=processed_bytes,
-                file_name="passport_photo.jpg",
+                file_name=f"passport_photo_{selected_standard.code}.jpg",
                 mime="image/jpeg",
             )
 
             if sheet_option:
-                sheet = create_passport_sheet(processed)
+                sheet = create_passport_sheet(processed, standard=selected_standard)
                 sheet_bytes = _image_to_bytes(sheet)
-                st.image(sheet, caption="4x6 sheet preview", width=400)
+                st.image(sheet, caption=f"{selected_standard.sheet.label} preview", width=400)
                 st.download_button(
-                    label="Download 4x6 sheet (JPEG)",
+                    label=f"Download {selected_standard.sheet.label} (JPEG)",
                     data=sheet_bytes,
-                    file_name="passport_sheet_4x6.jpg",
+                    file_name=f"passport_sheet_{selected_standard.code}.jpg",
                     mime="image/jpeg",
                 )
 
